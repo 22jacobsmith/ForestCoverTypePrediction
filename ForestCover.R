@@ -516,7 +516,7 @@ svm_output <- tibble(Id = test$Id, Cover_Type = svm_preds$.pred_class)
 vroom_write(svm_output, "ForestCover_SVMPreds.csv", delim = ",")
 
 
-boost_output %>% ggplot() +
+svm_output %>% ggplot() +
   geom_bar(aes(x = Cover_Type))
 
 
