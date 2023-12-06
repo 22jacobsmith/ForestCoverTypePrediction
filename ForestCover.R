@@ -1,5 +1,266 @@
 # ForestCover.R
+# This is the code for the Forest Cover Type Prediction competition
+# The code used in the final Kaggle workbook appears first, followed
+# other code used in model fitting, cross-validation, or testing
 
+
+### KAGGLE WORKBOOK CODE
+
+library(tidyverse)
+library(tidymodels)
+library(vroom)
+library(parsnip)
+library(keras)
+library(baguette)
+library(bonsai)
+
+# Read in the training and testing datasets
+
+train <- vroom("train.csv")
+test <- vroom("test.csv")
+
+# Make Cover_Type a factor
+
+train$Cover_Type = as.factor(train$Cover_Type)
+
+
+# Plot the proportion of observations in each class
+ggplot(data = train) +
+  geom_bar(aes(x = Cover_Type))
+
+
+# Boxplot of elevation for each cover type
+ggplot(data = train) +
+  geom_boxplot(aes(x = Cover_Type, y = Elevation))
+
+# Boxplot of hillshade_noon for each cover type
+ggplot(data = train) +
+  geom_boxplot(aes(x = Cover_Type, y = Hillshade_Noon))
+
+
+# Histogram of Hillshade_Noon
+ggplot(data = train) +
+  geom_histogram(aes(x = Slope))
+
+# Histogram of Elevation
+ggplot(data = train) +
+  geom_histogram(aes(x = Aspect))
+
+## RANDOM FOREST
+
+# Set up the recipe
+rf_recipe <-
+  recipe(Cover_Type~., data=train) %>%
+  step_zv(all_predictors()) %>% # remove zero-variance columns
+  step_normalize(all_numeric_predictors()) # normalize numeric predictors
+
+# Set the model type and the values of each tuning parameter
+rf_mod <- rand_forest(min_n = 1, mtry = 15, trees = 1000) %>% # chosen via 5-fold CV
+  set_engine('ranger') %>%
+  set_mode('classification')
+
+# Set up the workflow
+rf_wf <-
+  workflow() %>%
+  add_recipe(rf_recipe) %>%
+  add_model(rf_mod)
+
+
+# Fit the workflow
+final_wf <-
+  rf_wf %>%
+  fit(data = train)
+
+# Use the workflow to make predictions for the test data
+rf_preds <-
+  final_wf %>%
+  predict(new_data = test, type = 'class')
+
+# prepare a .csv file for submission to Kaggle competition
+rf_output <- tibble(Id = test$Id, Cover_Type = rf_preds$.pred_class)
+
+vroom_write(rf_output, "ForestCover_RFPreds.csv", delim = ",")
+
+## NEURAL NET
+
+# Set up recipe
+nn_recipe <- recipe(Cover_Type~., data = train) %>%
+  step_rm(Id) %>%
+  step_zv(all_predictors()) %>% # remove zero-variance columns
+  step_range(all_numeric_predictors(), min=0, max=1) #scale to [0,1]
+
+# Set up ANN model
+nn_model <- mlp(hidden_units = 10,
+                epochs = 100) %>%
+  set_engine("keras") %>%
+  set_mode("classification")
+
+# initialize the workflow
+nn_wf <- 
+  workflow() %>%
+  add_model(nn_model) %>%
+  add_recipe(nn_recipe)
+
+# finalize the workflow
+final_wf <-
+  nn_wf %>%
+  fit(data = train)
+
+# predict the class for the test data
+nn_preds <-
+  final_wf %>%
+  predict(new_data = test, type = "class")
+
+
+# prepare a .csv file to submit to kaggle
+
+nn_output <- tibble(Id = test$Id, Cover_Type = nn_preds$.pred_class)
+
+
+vroom_write(nn_output, "ForestCover_NNPreds.csv", delim = ",")
+
+## BOOSTING
+
+# Set up the recipe
+boost_recipe <-
+  recipe(Cover_Type~., data=train) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+# Set the model type and the values of each tuning parameter
+boost_mod <- boost_tree(trees = 500, learn_rate = 0.01, tree_depth = 2) %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+# Set up the workflow
+boost_wf <-
+  workflow() %>%
+  add_recipe(boost_recipe) %>%
+  add_model(boost_mod)
+
+# finalize the workflow
+
+final_wf <-
+  boost_wf %>%
+  fit(data = train)
+
+# predict the class for the test data
+boost_preds <-
+  final_wf %>%
+  predict(new_data = test, type = "class")
+
+
+# prepare a .csv file to submit to kaggle
+
+boost_output <- tibble(Id = test$Id, Cover_Type = boost_preds$.pred_class)
+
+
+vroom_write(boost_output, "ForestCover_BoostPreds.csv", delim = ",")
+
+## STACKING
+
+library(stacks)
+
+# Set up the 2 control settings for stacking models
+untuned_model <- control_stack_grid()
+tuned_model <- control_stack_resamples()
+
+# set up folds for cross-validation
+
+folds <- vfold_cv(train, v = 5, repeats = 1)
+
+# set up the three base learners
+
+# RF model
+rf_mod <- rand_forest(min_n = 1, mtry = 15, trees = 1000) %>%
+  set_engine('ranger') %>%
+  set_mode('classification')
+
+rf_wf <- 
+  workflow() %>%
+  add_model(rf_mod) %>%
+  add_recipe(rf_recipe)
+
+rf_model <-
+  fit_resamples(rf_wf,
+                resamples = folds,
+                metrics = metric_set(roc_auc),
+                control = tuned_model)
+# NN model
+nn_model <- mlp(hidden_units = 10,
+                epochs = 100) %>%
+  set_engine("keras") %>%
+  set_mode("classification")
+
+nn_wf <- 
+  workflow() %>%
+  add_model(nn_model) %>%
+  add_recipe(nn_recipe)
+
+nn_model <-
+  fit_resamples(nn_wf,
+                resamples = folds,
+                metrics = metric_set(roc_auc),
+                control = tuned_model)
+# Boosting model
+boost_mod <- boost_tree(trees = 500, learn_rate = 0.01, tree_depth = 2) %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+boost_wf <- 
+  workflow() %>%
+  add_model(boost_mod) %>%
+  add_recipe(boost_recipe)
+
+
+boost_model <-
+  fit_resamples(boost_wf,
+                resamples = folds,
+                metrics = metric_set(roc_auc),
+                control = tuned_model)
+
+
+# set up the stacked model
+
+my_stack <-
+  stacks() %>%
+  add_candidates(rf_model) %>%
+  add_candidates(nn_model) %>%
+  add_candidates(boost_model)
+
+# fit the stacked model
+
+stack_mod <-
+  my_stack %>%
+  blend_predictions() %>%
+  fit_members()
+
+# use the stacked model to generate predictions
+stack_preds <-
+  stack_mod %>%
+  predict(new_data = test, type = "class")
+
+
+# prepare the output for submission to kaggle
+
+stack_output <- tibble(Id = test$Id, Cover_Type = stack_preds$.pred_class)
+
+
+vroom_write(stack_output, "ForestCover_StackPreds.csv", delim = ",")
+
+## VIEW OUTPUT
+
+# View a plot of the predictions by class
+stack_output %>% ggplot() +
+  geom_bar(aes(x = Cover_Type), col = "gray", fill = "forestgreen") +
+  labs(title = "Predicted Forest Cover Type")
+
+
+
+### END OF KAGGLE WORKBOOK CODE
+
+
+### Code used for other model fitting, cross-validation, or testing
 
 ### LIBRARIES  
 library(tidyverse)
@@ -622,4 +883,12 @@ stack_output <- tibble(Id = test$Id, Cover_Type = stack_preds$.pred_class)
 vroom_write(stack_output, "ForestCover_StackPreds.csv", delim = ",")
 
 stack_output %>% ggplot() +
-  geom_bar(aes(x = Cover_Type))
+  geom_bar(aes(x = Cover_Type), col = "gray", fill = "forestgreen") +
+  labs(title = "Predicted Forest Cover Type")
+
+
+
+# things that can improve your score
+# fit 3 models, find the best
+# describe feature engineering
+# go deeper into best model
