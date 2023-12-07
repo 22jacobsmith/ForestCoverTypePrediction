@@ -128,8 +128,8 @@ boost_recipe <-
   step_normalize(all_numeric_predictors())
 
 # Set the model type and the values of each tuning parameter
-boost_mod <- boost_tree(trees = 500, learn_rate = 0.01, tree_depth = 2) %>%
-  set_engine('xgboost') %>%
+boost_mod <- boost_tree(trees = 2000, learn_rate = 0.1, tree_depth = 11) %>%
+  set_engine('lightgbm') %>%
   set_mode('classification')
 
 # Set up the workflow
